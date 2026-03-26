@@ -1,4 +1,4 @@
-# dnstt_resolver_probe.py
+# Parallel dnstt resolver probe
 🌐 زبان‌ها: [English](README.md) | [فارسی](README.fa.md)
 
 ابزار **سریع و عمیق** برای تست DNS Resolverها با هدف استفاده در DNSTT  

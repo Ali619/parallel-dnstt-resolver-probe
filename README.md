@@ -1,4 +1,4 @@
-# dnstt_resolver_probe.py
+# Parallel dnstt resolver probe
 🌐 Languages: [English](README.md) | [فارسی](README.fa.md)
 
 FAST + DEEP DNS Resolver Probe for DNSTT usage  
