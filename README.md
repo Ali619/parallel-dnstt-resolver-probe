@@ -29,7 +29,7 @@ You should already have these installed:
 Python dependencies (install once):
 
 ```bash
-pip install dnspython
+pip install dnspython pandas
 ```
 
 Optional, for real Excel output:
@@ -195,6 +195,50 @@ Each run produces one output file:
 When running in FAST-LITE mode, the recommendation field is set to UNKNOWN,  
 indicating that DNSTT compatibility was not fully evaluated.
 
+---
+
+## Additional utilities included in this repository
+
+The repository also contains a few auxiliary scripts and binaries to help with batch processing and Windows users. These files were recently added (or appear as untracked in git). Below are short descriptions and example usages — I inferred their purpose from the filenames; update these if the scripts have different behavior.
+
+- `concate_csv.py`
+  - Purpose: Lightweight helper to concatenate multiple CSV result files into a single CSV for easier analysis.
+  - Example usage (assumes Python 3):
+    ```bash
+    python3 concate_csv.py results/*.csv -o combined_results.csv
+    ```
+  - Note: If your CSVs contain headers, the script should handle them and keep a single header row. If it doesn't, edit the script or run a simple awk/head pipeline instead.
+
+- `split_txt.py`
+  - Purpose: Split a large resolver list (plain text file) into smaller chunk files so you can probe groups in parallel or distribute work across machines.
+  - Example usage:
+    ```bash
+    python3 split_txt.py sample_dns_list.txt --chunk-size 200 --out-dir chunks
+    ```
+  - Result: creates files like `chunks/part_001.txt`, `chunks/part_002.txt`, ...
+
+- `process_dns_chunk.sh`
+  - Purpose: Shell helper to run the probe for a single chunk (produced by `split_txt.py`) and store results in a designated output file or directory. It may wrap calls to `dnstt_resolver_probe.py` and manage logging.
+  - Example usage:
+    ```bash
+    ./process_dns_chunk.sh chunks/part_001.txt results/results_part_001.csv
+    <!-- or just: -->
+    ./process_dns_chunk.sh
+    ```
+  >
+  - Note: 
+
+        - DON'T FORGET TO SET `TUNNEL_DOMAIN` before running it.
+
+        - This script is a shell script and requires a Bash-compatible shell. On Windows, use WSL or Git Bash.
+
+- `dnstt-client-windows-amd64.exe`
+  - Purpose: A Windows build of the `dnstt-client` binary to allow DEEP-mode tests on Windows hosts.
+  - Usage: point `--dnstt-client-path` to this executable when running DEEP mode on Windows.
+    ```bash
+    python3 dnstt_resolver_probe.py --dns-list sample_dns_list.txt --run-deep --dnstt-client-path ./dnstt-client-windows-amd64.exe --dnstt-pubkey-file server.pub --dnstt-mode ssh
+    ```
+  - Security note: Treat downloaded or checked-in binaries carefully. If you didn't build this binary yourself, verify its origin before running.
 ---
 
 ## Safety & authorization

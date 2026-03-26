@@ -24,17 +24,20 @@ DISCLAIMER:
 import argparse
 import csv
 import ipaddress
+import os
 import random
+import signal
 import socket
 import string
 import struct
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import median as stat_median
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import dns.exception
 import dns.flags
@@ -43,14 +46,10 @@ import dns.query
 import dns.rcode
 import dns.rdatatype
 
-import os
-import signal
-import subprocess
-
-
 # -----------------------------
 # Utilities
 # -----------------------------
+
 
 def now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -118,7 +117,8 @@ def udp_query(
       2) If UDP times out and tcp_retry_on_timeout=True -> try TCP explicitly
 
     Returns:
-      (rcode_text, latency_ms, truncated_flag, response_message, err_name, used_tcp)
+      (rcode_text, latency_ms, truncated_flag,
+       response_message, err_name, used_tcp)
 
     Notes:
       - If TCP is used, truncated_flag = None
@@ -127,7 +127,8 @@ def udp_query(
 
     t0 = time.perf_counter()
     try:
-        resp, used_tcp = dns.query.udp_with_fallback(msg, server, timeout=timeout)
+        resp, used_tcp = dns.query.udp_with_fallback(
+            msg, server, timeout=timeout)
         latency_ms = (time.perf_counter() - t0) * 1000
         rcode_text = dns.rcode.to_text(resp.rcode())
         truncated = None if used_tcp else bool(resp.flags & dns.flags.TC)
@@ -150,6 +151,10 @@ def udp_query(
 
     except Exception as e:
         return "ERROR", None, None, None, type(e).__name__, False
+
+    except KeyboardInterrupt as e:
+        print("Stopped due to Keyboard Interupt")
+        exit(1)
 
 
 def random_nxdomain(suffix: str = "invalid") -> str:
@@ -383,7 +388,7 @@ class FinalResult:
 # -----------------------------
 
 def liveness_check(dns_ip: str, timeout: float, tries: int, payload: int, tcp_retry_on_timeout: bool) -> Tuple[
-    bool, str, Optional[float]]:
+        bool, str, Optional[float]]:
     rcodes: List[str] = []
     lats: List[float] = []
     a_ok = 0
@@ -394,7 +399,8 @@ def liveness_check(dns_ip: str, timeout: float, tries: int, payload: int, tcp_re
         )
         rcodes.append(r)
         if r == "NOERROR" and resp is not None:
-            got_a = any(rrset.rdtype == dns.rdatatype.A and len(rrset) > 0 for rrset in list(resp.answer or []))
+            got_a = any(rrset.rdtype == dns.rdatatype.A and len(
+                rrset) > 0 for rrset in list(resp.answer or []))
             if got_a:
                 a_ok += 1
                 if ms is not None:
@@ -407,7 +413,7 @@ def liveness_check(dns_ip: str, timeout: float, tries: int, payload: int, tcp_re
 
 
 def nxdomain_integrity_check(dns_ip: str, timeout: float, tries: int, suffix: str, tcp_retry_on_timeout: bool) -> Tuple[
-    bool, str, str]:
+        bool, str, str]:
     rcodes: List[str] = []
     noerror_with_answer = 0
     noerror_empty = 0
@@ -477,7 +483,8 @@ def zone_visibility_check(dns_ip: str, tunnel_domain: str, timeout: float, tcp_r
     if r == "NOERROR":
         z.note = "OK" + (":TCP" if used_tcp else "")
     else:
-        z.note = f"{r}" + (":TCP" if used_tcp else "") + (f":{err}" if err else "")
+        z.note = f"{r}" + (":TCP" if used_tcp else "") + \
+            (f":{err}" if err else "")
     return z
 
 
@@ -537,7 +544,8 @@ def tunnel_payload_stability_check(
             tcp_used += 1
 
         if rcode_text in success_rcodes:
-            ok_transport = used_tcp or (tc is False) or (tc is None and used_tcp)
+            ok_transport = used_tcp or (
+                tc is False) or (tc is None and used_tcp)
 
             if require_txt_answer and qtype.upper() == "TXT" and rcode_text == "NOERROR":
                 ok_content = has_nonempty_txt_answer(resp)
@@ -574,7 +582,8 @@ def tunnel_payload_stability_check(
     if tcp_used:
         note_parts.append(f"tcp={tcp_used}")
 
-    note = "OK" if pass_payload else (";".join(note_parts) if note_parts else "insufficient_ok")
+    note = "OK" if pass_payload else (
+        ";".join(note_parts) if note_parts else "insufficient_ok")
 
     return MTUCheck(
         payload=payload,
@@ -652,7 +661,8 @@ def score_fast_lite(live_ok: bool, live_median_ms: Optional[float], nxd_ok: bool
         score += 4
     else:
         # penalize common bad patterns
-        bad = {"NOERROR_WITH_ANSWER", "NOERROR_WITH_CNAME", "INCONSISTENT_RCODE", "TIMEOUT_OR_ERROR"}
+        bad = {"NOERROR_WITH_ANSWER", "NOERROR_WITH_CNAME",
+               "INCONSISTENT_RCODE", "TIMEOUT_OR_ERROR"}
         score -= 6 if (nxd_hint in bad) else 3
 
     return score
@@ -689,7 +699,8 @@ def run_fast_for_resolver_full(
     if not nxd_ok:
         notes.append(f"nxd={nxd_mode}({nxd_hint})")
 
-    zc = zone_visibility_check(dns_ip, tunnel_domain, timeout, tcp_retry_on_timeout=tcp_retry_on_timeout)
+    zc = zone_visibility_check(
+        dns_ip, tunnel_domain, timeout, tcp_retry_on_timeout=tcp_retry_on_timeout)
     zone_ok = (zc.ns_rcode == "NOERROR")
     if not zone_ok:
         notes.append(f"zone={zc.note}")
@@ -771,7 +782,8 @@ def run_fast_for_resolver_lite(
     if not nxd_ok:
         notes.append(f"nxd={nxd_mode}({nxd_hint})")
 
-    zc = ZoneCheck(ns_rcode="", ns_latency_ms=None, ns_used_tcp=False, note="SKIPPED_NO_TUNNEL_DOMAIN")
+    zc = ZoneCheck(ns_rcode="", ns_latency_ms=None,
+                   ns_used_tcp=False, note="SKIPPED_NO_TUNNEL_DOMAIN")
 
     sc = score_fast_lite(live_ok, live_med, nxd_ok, nxd_hint)
 
@@ -821,7 +833,8 @@ class TunnelAdapter:
 
     def _wait_ready(self, proc: subprocess.Popen, mode: str, host: str, port: int, deadline_s: float) -> None:
         mode = (mode or "").strip().lower()
-        ready_check = (self._get_arg("ready_check", "port") or "port").strip().lower()
+        ready_check = (self._get_arg("ready_check", "port")
+                       or "port").strip().lower()
 
         t0 = time.time()
         last_err = "NOT_READY"
@@ -829,7 +842,8 @@ class TunnelAdapter:
         while time.time() - t0 < deadline_s:
             rc = proc.poll()
             if rc is not None:
-                raise RuntimeError(f"dnstt-client exited early rc={rc} (see log)")
+                raise RuntimeError(
+                    f"dnstt-client exited early rc={rc} (see log)")
 
             try:
                 if mode == "ssh":
@@ -852,26 +866,35 @@ class TunnelAdapter:
                 else:
                     with socket.create_connection((host, port), timeout=0.8):
                         return
+            except KeyboardInterrupt as e:
+                print("Stopped due to Keyboard Interupt")
+                exit(1)
+
             except Exception as e:
                 last_err = type(e).__name__
 
             time.sleep(0.15)
 
-        raise RuntimeError(f"tunnel not ready after {deadline_s}s ({last_err})")
+        raise RuntimeError(
+            f"tunnel not ready after {deadline_s}s ({last_err})")
 
     def start_tunnel(self, resolver_ip: str) -> TunnelHandle:
         client_path = self._get_arg("dnstt_client_path", None)
         pubkey_file = self._get_arg("dnstt_pubkey_file", None)
         mode = (self._get_arg("dnstt_mode", "ssh") or "ssh").strip().lower()
-        local_host = (self._get_arg("dnstt_local_host", "127.0.0.1") or "127.0.0.1").strip()
+        local_host = (self._get_arg("dnstt_local_host",
+                      "127.0.0.1") or "127.0.0.1").strip()
         local_port = self._get_arg("dnstt_local_port", 0) or 0
-        ready_timeout = float(self._get_arg("dnstt_ready_timeout", 20.0) or 20.0)
+        ready_timeout = float(self._get_arg(
+            "dnstt_ready_timeout", 20.0) or 20.0)
         extra_args = self._get_arg("dnstt_extra_args", "") or ""
 
         if not client_path:
-            raise RuntimeError("Missing --dnstt-client-path (required for DEEP)")
+            raise RuntimeError(
+                "Missing --dnstt-client-path (required for DEEP)")
         if not pubkey_file:
-            raise RuntimeError("Missing --dnstt-pubkey-file (required for DEEP)")
+            raise RuntimeError(
+                "Missing --dnstt-pubkey-file (required for DEEP)")
 
         client_path = str(Path(client_path).expanduser())
         pubkey_file = str(Path(pubkey_file).expanduser())
@@ -902,7 +925,8 @@ class TunnelAdapter:
         outdir = Path(getattr(self.args, "outdir", "results"))
         outdir.mkdir(parents=True, exist_ok=True)
 
-        log_path = outdir / f"dnstt_{resolver_ip.replace('.', '_')}_{local_port}.log"
+        log_path = outdir / \
+            f"dnstt_{resolver_ip.replace('.', '_')}_{local_port}.log"
         log_f = open(log_path, "ab", buffering=0)
 
         proc = subprocess.Popen(
@@ -924,8 +948,12 @@ class TunnelAdapter:
         handle._log_f = log_f  # type: ignore[attr-defined]
 
         try:
-            self._wait_ready(proc, mode, local_host, int(local_port), ready_timeout)
+            self._wait_ready(proc, mode, local_host,
+                             int(local_port), ready_timeout)
             return handle
+        except KeyboardInterrupt as e:
+            print("Stopped due to Keyboard Interupt")
+            exit(1)
         except Exception as e:
             try:
                 self.stop_tunnel(handle)
@@ -965,6 +993,11 @@ class TunnelAdapter:
                         proc.wait(timeout=1.5)
                     except Exception:
                         pass
+
+        except KeyboardInterrupt as e:
+            print(f"Stopped due to Keyboard Interupt: {e}")
+            exit(1)
+
         finally:
             try:
                 if log_f:
@@ -985,7 +1018,8 @@ def socks5_connect_via_local_proxy(proxy_host: str, proxy_port: int, target_ip: 
                 return False, "SOCKS_GREETING_FAIL", None
 
             ip_bytes = socket.inet_aton(target_ip)
-            req = b"\x05\x01\x00\x01" + ip_bytes + struct.pack("!H", target_port)
+            req = b"\x05\x01\x00\x01" + ip_bytes + \
+                struct.pack("!H", target_port)
             s.sendall(req)
 
             rep = s.recv(4)
@@ -1010,6 +1044,11 @@ def socks5_connect_via_local_proxy(proxy_host: str, proxy_port: int, target_ip: 
 
             latency_ms = (time.perf_counter() - t0) * 1000
             return True, "OK", latency_ms
+
+    except KeyboardInterrupt as e:
+        print(f"Stopped due to Keyboard Interupt: {e}")
+        exit(1)
+
     except Exception as e:
         return False, type(e).__name__, None
 
@@ -1025,16 +1064,22 @@ def ssh_banner_check(local_host: str, local_port: int, timeout: float) -> Tuple[
             if line.startswith(b"SSH-2.0-") or line.startswith(b"SSH-1.99-"):
                 return True, f"OK:{line.decode(errors='ignore')}"
             return False, f"BAD_BANNER:{line.decode(errors='ignore')}"
+
+    except KeyboardInterrupt as e:
+        print(f"Stopped due to Keyboard Interupt: {e}")
+        exit(1)
+
     except Exception as e:
         return False, type(e).__name__
 
 
 def deep1_ssh_banner_retry(local_host: str, local_port: int, per_try_timeout: float, total_wait: float) -> Tuple[
-    bool, str]:
+        bool, str]:
     t0 = time.time()
     last = "NO_TRY"
     while time.time() - t0 < total_wait:
-        ok, detail = ssh_banner_check(local_host, local_port, timeout=per_try_timeout)
+        ok, detail = ssh_banner_check(
+            local_host, local_port, timeout=per_try_timeout)
         if ok:
             return True, detail
         last = detail
@@ -1047,14 +1092,16 @@ def deep1_check(mode: str, local_host: str, local_port: int, per_try_timeout: fl
     mode = (mode or "").strip().lower()
 
     if mode == "ssh":
-        ok, detail = deep1_ssh_banner_retry(local_host, local_port, per_try_timeout, ssh_total_wait)
+        ok, detail = deep1_ssh_banner_retry(
+            local_host, local_port, per_try_timeout, ssh_total_wait)
         return Deep1Result(ok=ok, mode="ssh", detail=detail, targets_ok="", median_connect_ms=None)
 
     if mode == "socks":
         ok_targets: List[str] = []
         lats: List[float] = []
         for ip, port in socks_targets:
-            ok, _detail, lat = socks5_connect_via_local_proxy(local_host, local_port, ip, port, per_try_timeout)
+            ok, _detail, lat = socks5_connect_via_local_proxy(
+                local_host, local_port, ip, port, per_try_timeout)
             if ok:
                 ok_targets.append(f"{ip}:{port}")
                 if lat is not None:
@@ -1188,8 +1235,10 @@ def write_xlsx(path: Path, rows: List[FinalResult]) -> None:
 # -----------------------------
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="FAST+DEEP DNSTT resolver probe (Option A + store logs + recommendation).")
-    ap.add_argument("--dns-list", required=True, help="Path to dns_list.txt (one resolver IPv4 per line)")
+    ap = argparse.ArgumentParser(
+        description="FAST+DEEP DNSTT resolver probe (Option A + store logs + recommendation).")
+    ap.add_argument("--dns-list", required=True,
+                    help="Path to dns_list.txt (one resolver IPv4 per line)")
 
     # ✅ tunnel-domain is now optional (FAST-LITE if missing)
     ap.add_argument("--tunnel-domain", required=False, default="",
@@ -1198,14 +1247,22 @@ def main() -> None:
     # FAST settings
     ap.add_argument("--payloads", default="512,900,1232",
                     help="Comma-separated EDNS payload sizes (default: 512,900,1232)")
-    ap.add_argument("--timeout", type=float, default=2.8, help="FAST DNS timeout seconds (default: 2.8)")
-    ap.add_argument("--workers", type=int, default=30, help="FAST parallel workers (default: 30)")
-    ap.add_argument("--live-tries", type=int, default=3, help="FAST liveness repeats (default: 3)")
-    ap.add_argument("--live-payload", type=int, default=512, help="FAST liveness EDNS payload (default: 512)")
-    ap.add_argument("--nxd-tries", type=int, default=3, help="FAST NXDOMAIN repeats (default: 3)")
-    ap.add_argument("--nxd-suffix", default="invalid", help="FAST NXDOMAIN suffix (default: invalid)")
-    ap.add_argument("--payload-repeats", type=int, default=4, help="FAST per-payload repeats (default: 4)")
-    ap.add_argument("--payload-pass", type=int, default=2, help="FAST pass threshold per payload (default: 2)")
+    ap.add_argument("--timeout", type=float, default=2.8,
+                    help="FAST DNS timeout seconds (default: 2.8)")
+    ap.add_argument("--workers", type=int, default=30,
+                    help="FAST parallel workers (default: 30)")
+    ap.add_argument("--live-tries", type=int, default=3,
+                    help="FAST liveness repeats (default: 3)")
+    ap.add_argument("--live-payload", type=int, default=512,
+                    help="FAST liveness EDNS payload (default: 512)")
+    ap.add_argument("--nxd-tries", type=int, default=3,
+                    help="FAST NXDOMAIN repeats (default: 3)")
+    ap.add_argument("--nxd-suffix", default="invalid",
+                    help="FAST NXDOMAIN suffix (default: invalid)")
+    ap.add_argument("--payload-repeats", type=int, default=4,
+                    help="FAST per-payload repeats (default: 4)")
+    ap.add_argument("--payload-pass", type=int, default=2,
+                    help="FAST pass threshold per payload (default: 2)")
 
     ap.add_argument("--tunnel-success-rcodes", default="NOERROR,NXDOMAIN",
                     help="Success rcodes for tunnel-domain checks (default: NOERROR,NXDOMAIN).")
@@ -1216,7 +1273,8 @@ def main() -> None:
                     help="Retry smaller payload on FORMERR/TIMEOUT for big payload (default: enabled).")
     ap.add_argument("--no-edns-downgrade", action="store_false", dest="edns_downgrade",
                     help="Disable EDNS downgrade retry.")
-    ap.add_argument("--downgrade-payload", type=int, default=512, help="Downgrade payload size (default: 512)")
+    ap.add_argument("--downgrade-payload", type=int, default=512,
+                    help="Downgrade payload size (default: 512)")
 
     ap.add_argument("--tcp-retry-on-timeout", action="store_true", default=True,
                     help="If UDP times out, retry query over TCP (default: enabled).")
@@ -1228,10 +1286,13 @@ def main() -> None:
                     help="Compatibility mode (default ON): FAST-pass focuses on payload stability (not zone NS visibility).")
     ap.add_argument("--no-compat-mode", action="store_false", dest="compat_mode",
                     help="Disable compat-mode and use stricter gating.")
-    ap.add_argument("--require-live", action="store_true", help="Require live_ok for FAST-pass")
-    ap.add_argument("--require-nxd", action="store_true", help="Require nxd_ok for FAST-pass (usually not needed)")
+    ap.add_argument("--require-live", action="store_true",
+                    help="Require live_ok for FAST-pass")
+    ap.add_argument("--require-nxd", action="store_true",
+                    help="Require nxd_ok for FAST-pass (usually not needed)")
 
-    ap.add_argument("--debug-resolver", default="", help="Comma-separated resolver IPs to print debug info")
+    ap.add_argument("--debug-resolver", default="",
+                    help="Comma-separated resolver IPs to print debug info")
 
     # DEEP settings
     ap.add_argument("--run-deep", action="store_true", help="Run DEEP stage.")
@@ -1239,27 +1300,36 @@ def main() -> None:
                     help="Deep-1 per-try socket timeout seconds (default: 2.0)")
     ap.add_argument("--deep1-total-wait", type=float, default=12.0,
                     help="Deep-1 total wait window for SSH banner retries (default: 12.0)")
-    ap.add_argument("--socks-targets", default="1.1.1.1:443,8.8.8.8:53", help="SOCKS targets (if mode=socks)")
-    ap.add_argument("--deep2-timeout", type=float, default=3.5, help="Deep-2 DNS timeout (default: 3.5)")
-    ap.add_argument("--deep2-repeats", type=int, default=7, help="Deep-2 repeats per payload (default: 7)")
-    ap.add_argument("--deep2-pass", type=int, default=5, help="Deep-2 pass threshold per payload (default: 5)")
-    ap.add_argument("--deep-qtype", default="TXT", help="Deep-2 qtype (default: TXT)")
+    ap.add_argument("--socks-targets", default="1.1.1.1:443,8.8.8.8:53",
+                    help="SOCKS targets (if mode=socks)")
+    ap.add_argument("--deep2-timeout", type=float, default=3.5,
+                    help="Deep-2 DNS timeout (default: 3.5)")
+    ap.add_argument("--deep2-repeats", type=int, default=7,
+                    help="Deep-2 repeats per payload (default: 7)")
+    ap.add_argument("--deep2-pass", type=int, default=5,
+                    help="Deep-2 pass threshold per payload (default: 5)")
+    ap.add_argument("--deep-qtype", default="TXT",
+                    help="Deep-2 qtype (default: TXT)")
 
     ap.add_argument("--deep-even-if-fast-fail", action="store_true",
                     help="Run DEEP even when FAST fails (useful on networks with DNS problems).")
     ap.add_argument("--deep-only", default="",
                     help="Comma-separated resolver IPs to run DEEP on (overrides FAST gating). Example: --deep-only 8.8.8.8,9.9.9.9")
 
-    ap.add_argument("--out", default="", help="Output file path. If empty -> results_<stamp>.csv in outdir.")
-    ap.add_argument("--outdir", default="results", help="Output directory (default: results)")
-    ap.add_argument("--xlsx", action="store_true", help="Write XLSX (Excel) instead of CSV.")
+    ap.add_argument("--out", default="",
+                    help="Output file path. If empty -> results_<stamp>.csv in outdir.")
+    ap.add_argument("--outdir", default="results",
+                    help="Output directory (default: results)")
+    ap.add_argument("--xlsx", action="store_true",
+                    help="Write XLSX (Excel) instead of CSV.")
 
     # DNSTT client settings (optional unless --run-deep)
     ap.add_argument("--dnstt-client-path", required=False, default="",
                     help="Path to dnstt-client binary (required only when --run-deep)")
     ap.add_argument("--dnstt-pubkey-file", required=False, default="",
                     help="Path to server.pub (required only when --run-deep)")
-    ap.add_argument("--dnstt-mode", default="ssh", choices=["socks", "ssh"], help="Local endpoint mode (default: ssh)")
+    ap.add_argument("--dnstt-mode", default="ssh",
+                    choices=["socks", "ssh"], help="Local endpoint mode (default: ssh)")
     ap.add_argument("--dnstt-local-host", default="127.0.0.1")
     ap.add_argument("--dnstt-local-port", type=int, default=0)
     ap.add_argument("--dnstt-ready-timeout", type=float, default=20.0,
@@ -1290,7 +1360,8 @@ def main() -> None:
         if not (args.dnstt_pubkey_file or "").strip():
             missing.append("--dnstt-pubkey-file")
         if missing:
-            raise SystemExit(f"DEEP requested (--run-deep) but missing required args: {', '.join(missing)}")
+            raise SystemExit(
+                f"DEEP requested (--run-deep) but missing required args: {', '.join(missing)}")
 
     payloads: List[int] = []
     for x in args.payloads.split(","):
@@ -1309,8 +1380,10 @@ def main() -> None:
     tunnel_success_rcodes = parse_rcode_set(args.tunnel_success_rcodes)
     socks_targets = parse_socks_targets(args.socks_targets)
 
-    debug_set = set(p.strip() for p in args.debug_resolver.split(",") if p.strip())
-    deep_only_set: Set[str] = set(p.strip() for p in args.deep_only.split(",") if p.strip())
+    debug_set = set(p.strip()
+                    for p in args.debug_resolver.split(",") if p.strip())
+    deep_only_set: Set[str] = set(p.strip()
+                                  for p in args.deep_only.split(",") if p.strip())
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -1325,7 +1398,8 @@ def main() -> None:
         args.xlsx = True
 
     if has_tunnel_domain:
-        print(f"START | resolvers={len(dns_list)} | tunnel_domain={tunnel_domain}")
+        print(
+            f"START | resolvers={len(dns_list)} | tunnel_domain={tunnel_domain}")
         print(
             f"FAST(FULL) payloads={payloads} | success_rcodes={','.join(sorted(tunnel_success_rcodes))} | compat_mode={args.compat_mode}")
     else:
@@ -1397,6 +1471,10 @@ def main() -> None:
                         print(
                             f"DBG  {dns_ip} payload={chk.payload} pass={chk.pass_payload} ok={chk.ok_count}/{chk.total} rcode_hist={chk.rcode_hist} note={chk.note}")
 
+            except KeyboardInterrupt as e:
+                print(f"Stopped due to Keyboard Interupt: {e}")
+                exit(1)
+
             except Exception as e:
                 fast_map[dns_ip] = ResolverFastResult(
                     dns_ip=dns_ip,
@@ -1431,7 +1509,8 @@ def main() -> None:
         if base_ok:
             fast_pass.append(ip)
 
-    fast_pass.sort(key=lambda ip: (-fast_map[ip].score, fast_map[ip].live_median_ms or 1e9))
+    fast_pass.sort(
+        key=lambda ip: (-fast_map[ip].score, fast_map[ip].live_median_ms or 1e9))
 
     print("---")
     print(f"FAST PASS: {len(fast_pass)}/{len(dns_list)}")
@@ -1446,8 +1525,10 @@ def main() -> None:
         is_fast_pass = ip in fast_pass
 
         deep_ran = False
-        deep1 = Deep1Result(ok=False, mode="", detail="", targets_ok="", median_connect_ms=None)
-        deep2 = Deep2Result(ok=False, mtu_matrix="", best_mtu=None, best_reason="")
+        deep1 = Deep1Result(ok=False, mode="", detail="",
+                            targets_ok="", median_connect_ms=None)
+        deep2 = Deep2Result(ok=False, mtu_matrix="",
+                            best_mtu=None, best_reason="")
 
         dnstt_log_path = ""
         dnstt_log_tail = ""
@@ -1456,14 +1537,16 @@ def main() -> None:
         if deep_only_set:
             should_deep = args.run_deep and (ip in deep_only_set)
         else:
-            should_deep = args.run_deep and (is_fast_pass or args.deep_even_if_fast_fail)
+            should_deep = args.run_deep and (
+                is_fast_pass or args.deep_even_if_fast_fail)
 
         if should_deep:
             deep_ran = True
             handle: Optional[TunnelHandle] = None
             try:
                 handle = adapter.start_tunnel(ip)
-                dnstt_log_path = extract_log_path_from_meta(getattr(handle, "meta", "") or "")
+                dnstt_log_path = extract_log_path_from_meta(
+                    getattr(handle, "meta", "") or "")
 
                 deep1 = deep1_check(
                     handle.mode,
@@ -1473,7 +1556,8 @@ def main() -> None:
                     socks_targets,
                     ssh_total_wait=args.deep1_total_wait,
                 )
-                print(f"DEEP1 {ip:>16} mode={deep1.mode} ok={deep1.ok} detail={deep1.detail}")
+                print(
+                    f"DEEP1 {ip:>16} mode={deep1.mode} ok={deep1.ok} detail={deep1.detail}")
 
                 if deep1.ok:
                     candidate_payloads = fast_payload_ok.get(ip) or payloads
@@ -1491,14 +1575,22 @@ def main() -> None:
                         downgrade_payload=args.downgrade_payload,
                         tcp_retry_on_timeout=args.tcp_retry_on_timeout,
                     )
-                    print(f"DEEP2 {ip:>16} ok={deep2.ok} best_mtu={deep2.best_mtu} matrix={deep2.mtu_matrix}")
+                    print(
+                        f"DEEP2 {ip:>16} ok={deep2.ok} best_mtu={deep2.best_mtu} matrix={deep2.mtu_matrix}")
                 else:
-                    deep2 = Deep2Result(ok=False, mtu_matrix="", best_mtu=None, best_reason="SKIP_DEEP2_DEEP1_FAIL")
+                    deep2 = Deep2Result(
+                        ok=False, mtu_matrix="", best_mtu=None, best_reason="SKIP_DEEP2_DEEP1_FAIL")
+
+            except KeyboardInterrupt as e:
+                print(f"Stopped due to Keyboard Interupt: {e}")
+                exit(1)
 
             except Exception as e:
                 detail = f"DEEP_CRASH:{type(e).__name__}:{e}"
-                deep1 = Deep1Result(ok=False, mode="", detail=detail, targets_ok="", median_connect_ms=None)
-                deep2 = Deep2Result(ok=False, mtu_matrix="", best_mtu=None, best_reason="DEEP_CRASH")
+                deep1 = Deep1Result(
+                    ok=False, mode="", detail=detail, targets_ok="", median_connect_ms=None)
+                deep2 = Deep2Result(ok=False, mtu_matrix="",
+                                    best_mtu=None, best_reason="DEEP_CRASH")
 
                 meta = ""
                 try:
@@ -1519,7 +1611,8 @@ def main() -> None:
                         pass
 
                 if dnstt_log_path:
-                    dnstt_log_tail = read_log_tail(dnstt_log_path, max_bytes=4000)
+                    dnstt_log_tail = read_log_tail(
+                        dnstt_log_path, max_bytes=4000)
 
         recommendation, recommend_reason = compute_recommendation(
             deep_ran=deep_ran,
